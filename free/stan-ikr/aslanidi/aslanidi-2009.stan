@@ -52,7 +52,7 @@ functions{
     
     real xtau = theta[1] / (1 + exp(aV/ theta[2])) + theta[3];
     real xinf = 1 / (1 + exp(-(aV + theta[4]) / theta[5]));
-    real rinf = 1 / (1 + exp((aV + theta[6]) / theta[7]));
+    
     real dydt[1];
     dydt[1] = (xinf - I[1]) / xtau;
     return dydt;
@@ -60,11 +60,35 @@ functions{
   
   vector solve_aslanidi_forced_ode(real[] ts, real X0, real[] theta, real[] V, real t0){
     int x_i[1];
-    real I[size(V),1];
+    real X_Kr[size(V),1];
+    vector[size(V)] I;
     x_i[1] = size(V);
+    
+    X_Kr = integrate_ode_bdf(deriv_aslanidi, rep_array(X0, 1), t0, ts, theta, to_array_1d(append_row(to_vector(ts), to_vector(V))), x_i, 10^(-5),10^(-5),10^3);
 
-    I = integrate_ode_bdf(deriv_aslanidi, rep_array(X0, 1), t0, ts, theta, to_array_1d(append_row(to_vector(ts), to_vector(V))), x_i);
-    return(to_vector(I[,1]));
+    for(i in 1:x_i[1]){
+      real t = ts[i];
+      int aT = find_interval_elem(t, to_vector(ts), 1);
+      real aV = (aT==0) ? V[1] : V[aT];
+      real rInf = 1 / (1 + exp((aV + theta[6]) / theta[7]));
+      I[i] = theta[8] * X_Kr[i,1] * rInf * (aV + 85);
+    }
+    
+    return(I);
+  }
+  
+  real calculateLogLikelihood(real[] I, real[] ts, real X0, real[] theta, real[] V, real t0, real sigma, int N){
+    
+  vector[N] I_int;
+  real aLogProb;
+  
+  // solve ODE using stiff solver
+  I_int = solve_aslanidi_forced_ode(ts, X0, theta, V,-0.1);
+  
+  // likelihood
+  aLogProb = normal_lpdf(I|I_int,sigma);
+
+  return(aLogProb);
   }
 }
 
@@ -80,7 +104,6 @@ transformed data {
   int x_i[0];
 }
 
-
 parameters{
   real<lower=0> p1;     // ms
   real<lower=0> p2;     // mV
@@ -89,12 +112,13 @@ parameters{
   real<lower=0> p5;     // mV
   real p6;              // mV
   real<lower=0> p7;     // mV
+  real<lower=0> p8;
   real<lower=0,upper=1> X0;
   real<lower=0> sigma;
 }
 
 transformed parameters{
-  real theta[7];
+  real theta[8];
   theta[1] = p1;
   theta[2] = p2;
   theta[3] = p3;
@@ -102,17 +126,12 @@ transformed parameters{
   theta[5] = p5;
   theta[6] = p6;
   theta[7] = p7;
+  theta[8] = p8;
 }
 
 model{
-  // solve ODE using stiff solver
-  vector[N] I_int;
-  I_int = solve_aslanidi_forced_ode(ts, X0, theta, V,-0.1);
   
-  // likelihood
-  for(i in 1:N){
-    I[i] ~ normal(I_int[i],sigma);
-  }
+  target += calculateLogLikelihood(I, ts, X0, theta, V, -0.01, sigma, N);
   
   //priors
   p1 ~ normal(900,500);
@@ -122,5 +141,16 @@ model{
   p5 ~ normal(12.25,3);
   p6 ~ normal(-5.6,1);
   p7 ~ normal(20.4,3);
+  p8 ~ normal(0.01,0.001);
   sigma ~ normal(1,0.1);
+}
+
+generated quantities{
+  vector[N] lLogProbability;
+  vector[N] I_int;
+  
+  I_int = solve_aslanidi_forced_ode(ts, X0, theta, V,-0.1);
+  for(i in 1:N){
+    lLogProbability[i] = normal_lpdf(I[i]|I_int[i],sigma);
+  }
 }
